@@ -16,18 +16,12 @@ const { host, port, cache } = program.opts();
 
 const cacheDirectory = path.isAbsolute(cache) ? cache : path.join(__dirname, cache);
 
-
 async function createDirectoryIfNotExists(dirPath) {
   try {
-    const dirExists = await fs.access(dirPath).then(() => true).catch(() => false);
-    if (dirExists) {
-      console.log(`Директорія '${dirPath}' вже існує.`);
-    } else {
-      await fs.mkdir(dirPath, { recursive: true });
-      console.log(`Директорія '${dirPath}' створена.`);
-    }
+    await fs.access(dirPath).catch(() => fs.mkdir(dirPath, { recursive: true }));
+    console.log(`Директорія '${dirPath}' готова.`);
   } catch (error) {
-    console.error('Помилка при доступі до директорії:', error);
+    console.error('Помилка при створенні директорії:', error);
   }
 }
 
@@ -38,9 +32,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-
 const upload = multer();
-
 
 app.get('/UploadForm.html', (req, res) => {
   const filePath = path.resolve('D:/DZ/bc 2024/bc2024-5/UploadForm.html');
@@ -52,7 +44,6 @@ app.get('/UploadForm.html', (req, res) => {
   });
 });
 
-
 app.post('/write', upload.none(), async (req, res) => {
   const { note_name, note } = req.body;
 
@@ -61,38 +52,33 @@ app.post('/write', upload.none(), async (req, res) => {
   }
 
   const filePath = path.join(cacheDirectory, note_name);
-
   try {
-    const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
-    if (fileExists) {
-      return res.status(400).send('Note with this name already exists');
-    }
-
-    await fs.writeFile(filePath, note);
-    return res.status(201).send('Note created');
+    await fs.access(filePath).then(() => {
+      throw new Error('Note already exists');
+    }).catch(async (err) => {
+      if (err.message === 'Note already exists') throw err;
+      await fs.writeFile(filePath, note);
+      return res.status(201).send('Note created');
+    });
   } catch (error) {
     console.error('Error creating note:', error);
-    return res.status(500).send('Internal server error');
+    return res.status(error.message === 'Note already exists' ? 400 : 500).send(error.message);
   }
 });
+
 
 app.get('/notes/:name', async (req, res) => {
   const { name } = req.params;
   const filePath = path.join(cacheDirectory, name);
 
-  const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
-
-  if (fileExists) {
-    try {
-      const note = await fs.readFile(filePath, 'utf8');
-      return res.status(200).send(note);
-    } catch (error) {
-      return res.status(500).send('Error reading note');
-    }
-  } else {
+  try {
+    const note = await fs.readFile(filePath, 'utf8');
+    return res.status(200).send(note);
+  } catch (error) {
     return res.status(404).send('Not found');
   }
 });
+
 
 app.put('/notes/:name', async (req, res) => {
   const { name } = req.params;
@@ -103,9 +89,10 @@ app.put('/notes/:name', async (req, res) => {
     await fs.writeFile(filePath, text);
     return res.status(200).send('Note updated');
   } catch (error) {
-    return res.status(404).send('Not found');
+    return res.status(500).send('Error updating note');
   }
 });
+
 
 app.delete('/notes/:name', async (req, res) => {
   const { name } = req.params;
@@ -122,14 +109,12 @@ app.delete('/notes/:name', async (req, res) => {
 app.get('/notes', async (req, res) => {
   try {
     const files = await fs.readdir(cacheDirectory);
-    const notesList = [];
-
-    for (const file of files) {
-      const filePath = path.join(cacheDirectory, file);
-      const note = await fs.readFile(filePath, 'utf8');
-      notesList.push({ name: file, text: note });
-    }
-
+    const notesList = await Promise.all(
+      files.map(async (file) => {
+        const note = await fs.readFile(path.join(cacheDirectory, file), 'utf8');
+        return { name: file, text: note };
+      })
+    );
     return res.status(200).json(notesList);
   } catch (error) {
     return res.status(500).send('Error reading notes');
