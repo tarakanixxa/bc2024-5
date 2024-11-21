@@ -1,6 +1,8 @@
 const fs = require('fs').promises;
 const express = require('express');
 const { Command } = require('commander');
+const multer = require('multer');
+const path = require('path');
 
 const program = new Command();
 
@@ -11,6 +13,9 @@ program
   .parse(process.argv);
 
 const { host, port, cache } = program.opts();
+
+const cacheDirectory = path.isAbsolute(cache) ? cache : path.join(__dirname, cache);
+
 
 async function createDirectoryIfNotExists(dirPath) {
   try {
@@ -24,78 +29,111 @@ async function createDirectoryIfNotExists(dirPath) {
   } catch (error) {
     console.error('Помилка при доступі до директорії:', error);
   }
-} 
+}
 
-createDirectoryIfNotExists(cache);
+createDirectoryIfNotExists(cacheDirectory);
 
 const app = express();
-
-let notes = {};
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/notes/:name', (req, res) => {
-  const { name } = req.params;
-  if (notes[name]) {
-    return res.status(200).send(notes[name]);
-  } else {
-    return res.status(404).send('Not found');
-  }
-});
 
-app.put('/notes/:name', (req, res) => {
-  const { name } = req.params;
-  const { text } = req.body;
-  if (notes[name]) {
-    notes[name] = text;
-    return res.status(200).send('Note updated');
-  } else {
-    return res.status(404).send('Not found');
-  }
-});
+const upload = multer();
 
-app.delete('/notes/:name', (req, res) => {
-  const { name } = req.params;
-  if (notes[name]) {
-    delete notes[name];
-    return res.status(200).send('Note deleted');
-  } else {
-    return res.status(404).send('Not found');
-  }
-});
-
-app.get('/notes', (req, res) => {
-  const notesList = Object.keys(notes).map(name => ({
-    name,
-    text: notes[name]
-  }));
-  return res.status(200).json(notesList);
-});
-
-app.post('/write', (req, res) => {
-  const { note_name, note } = req.body;
-  if (notes[note_name]) {
-    return res.status(400).send('Bad Request');
-  }
-  notes[note_name] = note;
-  return res.status(201).send('Note created');
-});
 
 app.get('/UploadForm.html', (req, res) => {
-  res.status(200).send(`
-    <html>
-      <body>
-        <form action="/write" method="POST" enctype="multipart/form-data">
-          <label for="note_name">Note Name:</label><br>
-          <input type="text" id="note_name" name="note_name" required><br><br>
-          <label for="note">Note Text:</label><br>
-          <textarea id="note" name="note" required></textarea><br><br>
-          <button type="submit">Submit</button>
-        </form>
-      </body>
-    </html>
-  `);
+  const filePath = path.resolve('D:/DZ/bc 2024/bc2024-5/UploadForm.html');
+  res.sendFile(filePath, (err) => {
+    if (err) {
+      console.error('Помилка при відправці файлу:', err);
+      res.status(500).send('Помилка при завантаженні файлу');
+    }
+  });
+});
+
+
+app.post('/write', upload.none(), async (req, res) => {
+  const { note_name, note } = req.body;
+
+  if (!note_name || !note) {
+    return res.status(400).send('Note name and content are required');
+  }
+
+  const filePath = path.join(cacheDirectory, note_name);
+
+  try {
+    const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+    if (fileExists) {
+      return res.status(400).send('Note with this name already exists');
+    }
+
+    await fs.writeFile(filePath, note);
+    return res.status(201).send('Note created');
+  } catch (error) {
+    console.error('Error creating note:', error);
+    return res.status(500).send('Internal server error');
+  }
+});
+
+app.get('/notes/:name', async (req, res) => {
+  const { name } = req.params;
+  const filePath = path.join(cacheDirectory, name);
+
+  const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+
+  if (fileExists) {
+    try {
+      const note = await fs.readFile(filePath, 'utf8');
+      return res.status(200).send(note);
+    } catch (error) {
+      return res.status(500).send('Error reading note');
+    }
+  } else {
+    return res.status(404).send('Not found');
+  }
+});
+
+app.put('/notes/:name', async (req, res) => {
+  const { name } = req.params;
+  const { text } = req.body;
+  const filePath = path.join(cacheDirectory, name);
+
+  try {
+    await fs.writeFile(filePath, text);
+    return res.status(200).send('Note updated');
+  } catch (error) {
+    return res.status(404).send('Not found');
+  }
+});
+
+app.delete('/notes/:name', async (req, res) => {
+  const { name } = req.params;
+  const filePath = path.join(cacheDirectory, name);
+
+  try {
+    await fs.unlink(filePath);
+    return res.status(200).send('Note deleted');
+  } catch (error) {
+    return res.status(404).send('Not found');
+  }
+});
+
+app.get('/notes', async (req, res) => {
+  try {
+    const files = await fs.readdir(cacheDirectory);
+    const notesList = [];
+
+    for (const file of files) {
+      const filePath = path.join(cacheDirectory, file);
+      const note = await fs.readFile(filePath, 'utf8');
+      notesList.push({ name: file, text: note });
+    }
+
+    return res.status(200).json(notesList);
+  } catch (error) {
+    return res.status(500).send('Error reading notes');
+  }
 });
 
 app.listen(port, host, () => {
